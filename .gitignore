@@ -39,6 +39,9 @@ postgres-data/
 .idea/
 *.swp
 
+# Claude Code local tool state
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db

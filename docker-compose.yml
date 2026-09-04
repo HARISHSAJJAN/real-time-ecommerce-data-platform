@@ -43,7 +43,13 @@ services:
       start_period: 20s
     networks:
       - ecommerce-network
+    restart: unless-stopped
 
+  # One-shot job: creates topics then exits 0. Deliberately no restart policy -
+  # `unless-stopped`/`always` restart even after a clean exit, which would
+  # loop this forever. Re-run manually (`docker compose up kafka-init`) if
+  # topics ever need recreating; the --if-not-exists flags make it safe to
+  # re-run any time.
   kafka-init:
     image: apache/kafka:3.7.0
     container_name: ecommerce-kafka-init
@@ -74,6 +80,7 @@ services:
         condition: service_healthy
     networks:
       - ecommerce-network
+    restart: unless-stopped
 
   # -------------------------------------------------------------- StarRocks
   starrocks:
@@ -94,7 +101,11 @@ services:
       start_period: 60s
     networks:
       - ecommerce-network
+    restart: unless-stopped
 
+  # One-shot job: applies DDL then exits 0. See kafka-init's comment for why
+  # it has no restart policy - the `CREATE ... IF NOT EXISTS` statements make
+  # it safe to re-run manually any time (`docker compose up starrocks-init`).
   starrocks-init:
     image: mysql:8.0
     container_name: ecommerce-starrocks-init
@@ -134,6 +145,7 @@ services:
       start_period: 30s
     networks:
       - ecommerce-network
+    restart: unless-stopped
 
   # ------------------------------------------------------------- PostgreSQL
   postgres:
@@ -156,6 +168,7 @@ services:
       start_period: 10s
     networks:
       - ecommerce-network
+    restart: unless-stopped
 
   # --------------------------------------------------------- Spark streaming
   spark-streaming:

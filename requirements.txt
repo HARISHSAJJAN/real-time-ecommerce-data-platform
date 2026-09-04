@@ -1,0 +1,37 @@
+# ==============================================================================
+# Shared base requirements for local tooling, tests, and scripts.
+# Service-specific images (spark/, api/, dashboard/, data_generator/) declare
+# their own requirements.txt so each Docker image stays minimal.
+# ==============================================================================
+
+# Data generator / Kafka
+confluent-kafka==2.4.0
+pydantic==2.7.1
+Faker==25.2.0
+python-dotenv==1.0.1
+
+# StarRocks seeding (MySQL wire protocol) / Postgres metadata
+PyMySQL==1.1.1
+psycopg2-binary==2.9.9
+
+# API
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+trino==0.328.0
+httpx==0.27.0
+
+# Dashboard
+streamlit==1.35.0
+pandas==2.2.2
+plotly==5.22.0
+requests==2.32.3
+
+# Spark (driver-side install for local dev/testing; the spark image pins its own version)
+pyspark==3.5.1
+
+# Testing / tooling
+pytest==8.2.1
+pytest-mock==3.14.0
+black==24.4.2
+ruff==0.4.4
+mypy==1.10.0

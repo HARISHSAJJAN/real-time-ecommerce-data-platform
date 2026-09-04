@@ -1,0 +1,51 @@
+# Environment
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Spark
+spark/checkpoints/
+spark-warehouse/
+*.crc
+_SUCCESS
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Docker volumes / data
+data/
+volumes/
+kafka-data/
+starrocks-data/
+postgres-data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Generated sample data
+scripts/sample_output/

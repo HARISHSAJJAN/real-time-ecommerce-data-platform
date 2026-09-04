@@ -1,0 +1,268 @@
+name: ecommerce-data-platform
+
+networks:
+  ecommerce-network:
+    driver: bridge
+
+volumes:
+  kafka-data:
+  starrocks-data:
+  postgres-data:
+  spark-checkpoints:
+
+services:
+  # ------------------------------------------------------------------ Kafka
+  kafka:
+    image: apache/kafka:3.7.0
+    hostname: kafka
+    container_name: ecommerce-kafka
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+    networks:
+      - ecommerce-network
+
+  kafka-init:
+    image: apache/kafka:3.7.0
+    container_name: ecommerce-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic ecommerce-events --partitions 6 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic ecommerce-dead-letter --partitions 3 --replication-factor 1
+        echo "Kafka topics ready."
+    networks:
+      - ecommerce-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: ecommerce-kafka-ui
+    ports:
+      - "8081:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecommerce-network
+
+  # -------------------------------------------------------------- StarRocks
+  starrocks:
+    image: starrocks/allin1-ubuntu:3.3-latest
+    hostname: starrocks
+    container_name: ecommerce-starrocks
+    ports:
+      - "8030:8030" # FE HTTP
+      - "9030:9030" # FE MySQL protocol
+      - "8040:8040" # BE HTTP
+    volumes:
+      - starrocks-data:/data/deploy/starrocks
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8030/api/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    networks:
+      - ecommerce-network
+
+  starrocks-init:
+    image: mysql:8.0
+    container_name: ecommerce-starrocks-init
+    depends_on:
+      starrocks:
+        condition: service_healthy
+    volumes:
+      - ./starrocks/init:/init
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        for f in /init/*.sql; do
+          echo "Applying $$f";
+          mysql -h starrocks -P 9030 -u root < "$$f";
+        done
+        echo "StarRocks schema ready."
+    networks:
+      - ecommerce-network
+
+  # ------------------------------------------------------------------ Trino
+  trino:
+    image: trinodb/trino:435
+    hostname: trino
+    container_name: ecommerce-trino
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+    depends_on:
+      starrocks-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/v1/info || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+    networks:
+      - ecommerce-network
+
+  # ------------------------------------------------------------- PostgreSQL
+  postgres:
+    image: postgres:16-alpine
+    container_name: ecommerce-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DATABASE:-platform_metadata}
+      POSTGRES_USER: ${POSTGRES_USER:-platform_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_in_dot_env}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-platform_admin} -d ${POSTGRES_DATABASE:-platform_metadata}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - ecommerce-network
+
+  # --------------------------------------------------------- Spark streaming
+  spark-streaming:
+    build:
+      context: .
+      dockerfile: spark/Dockerfile
+    container_name: ecommerce-spark-streaming
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      starrocks-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC_EVENTS: ${KAFKA_TOPIC_EVENTS:-ecommerce-events}
+      KAFKA_TOPIC_DLQ: ${KAFKA_TOPIC_DLQ:-ecommerce-dead-letter}
+      STARROCKS_HOST: starrocks
+      STARROCKS_PORT: "9030"
+      STARROCKS_DATABASE: ${STARROCKS_DATABASE:-ecommerce}
+      STARROCKS_USER: ${STARROCKS_USER:-root}
+      STARROCKS_PASSWORD: ${STARROCKS_PASSWORD:-}
+      SPARK_CHECKPOINT_DIR: /opt/spark-checkpoints
+      SPARK_TRIGGER_INTERVAL: ${SPARK_TRIGGER_INTERVAL:-10 seconds}
+      SPARK_WATERMARK_DELAY: ${SPARK_WATERMARK_DELAY:-2 minutes}
+      SPARK_WINDOW_DURATION: ${SPARK_WINDOW_DURATION:-1 minute}
+      SPARK_SHUFFLE_PARTITIONS: ${SPARK_SHUFFLE_PARTITIONS:-8}
+    volumes:
+      - spark-checkpoints:/opt/spark-checkpoints
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # ---------------------------------------------------------- Data generator
+  data-generator:
+    build:
+      context: .
+      dockerfile: data_generator/Dockerfile
+    container_name: ecommerce-data-generator
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS_HOST: kafka:9092
+      KAFKA_TOPIC_EVENTS: ${KAFKA_TOPIC_EVENTS:-ecommerce-events}
+      KAFKA_TOPIC_DLQ: ${KAFKA_TOPIC_DLQ:-ecommerce-dead-letter}
+      EVENTS_PER_SECOND: ${EVENTS_PER_SECOND:-20}
+      NUM_USERS: ${NUM_USERS:-1000}
+      NUM_PRODUCTS: ${NUM_PRODUCTS:-200}
+      MALFORMED_EVENT_RATE: ${MALFORMED_EVENT_RATE:-0.02}
+      DUPLICATE_EVENT_RATE: ${DUPLICATE_EVENT_RATE:-0.03}
+      RANDOM_SEED: ${RANDOM_SEED:-42}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-platform_metadata}
+      POSTGRES_USER: ${POSTGRES_USER:-platform_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_in_dot_env}
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------- API
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: ecommerce-api
+    ports:
+      - "8000:8000"
+    depends_on:
+      trino:
+        condition: service_healthy
+    environment:
+      TRINO_HOST: trino
+      TRINO_PORT: "8080"
+      TRINO_USER: ${TRINO_USER:-trino}
+      TRINO_CATALOG: ${TRINO_CATALOG:-starrocks}
+      TRINO_SCHEMA: ${TRINO_SCHEMA:-ecommerce}
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      API_LOG_LEVEL: ${API_LOG_LEVEL:-INFO}
+      API_CORS_ORIGINS: http://localhost:8501
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # ------------------------------------------------------------- Dashboard
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: ecommerce-dashboard
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      STREAMLIT_API_BASE_URL: http://api:8000
+      DASHBOARD_REFRESH_SECONDS: ${DASHBOARD_REFRESH_SECONDS:-15}
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
